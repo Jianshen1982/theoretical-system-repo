@@ -1,0 +1,152 @@
+# -*- coding: utf-8 -*-
+# 测量报告10 v2：δ 定案轮
+# 修复: R1 全局try/except+逐行flush(取证); R2 移除sys.path.append与bpy(纯文件装载,防崩溃/冻结);
+#      R3 自身法向(4对差向量平均+SVD校验)——弃用N_EXACT强迫弛豫(它把框架误差注入δ→假阴性);
+#      R4 弛豫降级为诊断不参与δ; R5 nsimplify仅在有理/√m/k通道落空后启动(防主线程冻结);
+#      R6 永不SystemExit(缺文件时记日志后优雅结束); R7 51棱长复核
+import os, datetime, math, traceback
+from fractions import Fraction
+import numpy as np
+
+OUTDIR = r"D:\物理数学\数学\理想球体的有限不可实现性"
+STAMP  = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+FS = open(os.path.join(OUTDIR, f"测量报告10v2_{STAMP}.txt"), "w", encoding="utf-8")
+def logS(*a):
+    print(*a); print(*a, file=FS); FS.flush()          # R1: 逐行落盘
+
+try:
+    import sympy
+    from sympy import nsimplify as nsimp, sqrt
+    SYMPY_OK = True
+except Exception:
+    SYMPY_OK = False
+logS("="*72)
+logS("测量报告10 v2：δ 定案轮（LM float64 坐标 · 自身法向 · R1–R7 修订）")
+logS(f"时间: {datetime.datetime.now().isoformat()};  sympy 就绪: {SYMPY_OK}")
+logS("="*72)
+
+ZERO = {1,5,8,12}
+PAIRS = [(2,11),(3,10),(4,6),(7,9)]
+FIVE = [0,13,14,15,16]
+SPEC = {(2,11): Fraction(40,27), (3,10): Fraction(8,9),      # v4/R10 更正后逐对标签
+        (4,6): Fraction(8,9),   (7,9): Fraction(4,3)}
+TGT = np.array([8/3, 256/81, 200/57])
+SQ83 = math.sqrt(8.0/3.0)
+results = {}
+
+def own_normal(V):
+    """R3: 镜面法向由构型自身导出——4对差向量单位化平均；SVD 校验共线度；A.7 定向"""
+    D = np.array([(lambda d: d/np.linalg.norm(d) if d[0] > 0 else -d/np.linalg.norm(d))(V[i]-V[j])
+                  for i, j in PAIRS])
+    n = D.mean(axis=0); n /= np.linalg.norm(n)
+    sv = np.linalg.svd(D - np.outer(D@n, n), compute_uv=False)[0]
+    logS(f"  [自身法向] 4对差向量共线残差(SVD) = {sv:.2e}；  n = ({n[0]:+.15f}, {n[1]:+.15f}, {n[2]:+.15f})")
+    if n[0] < 0: n = -n
+    return n
+
+def analyze_file(path, tag):
+    logS(f"\n========== {tag} ==========")
+    V = np.loadtxt(path).astype(np.float64)
+    logS(f"[装载] {os.path.basename(path)}: shape = {V.shape}")
+    if V.shape != (17, 3):
+        logS("[中止] 坐标文件不是 17×3 —— 请核对附录E文件"); return None
+    V = V - V[1]                                   # 中心顶点钉原点
+    R_env = float(np.linalg.norm(V, axis=1).max())
+    model_units = abs(R_env - SQ83) < 1e-3
+    logS(f"[框架] 包络半径 = {R_env:.15f}（模型单位 √(8/3) = {SQ83:.15f}）→ {'模型单位' if model_units else '归一单位'}")
+    n = own_normal(V)
+    nc = np.array([2*math.sqrt(2)/3, -1/3, 0.0])
+    logS(f"[A.7/A.8] n 与报告8闭式差 = {float(np.abs(n-nc).max()):.2e}（参考值；δ 不依赖它）")
+    dp = V @ n
+    r_zero = max(abs(dp[i]) for i in ZERO)
+    r_pair = max(max(abs(dp[i]+dp[j]), float(np.linalg.norm((V[i]-dp[i]*n)-(V[j]-dp[j]*n)))) for i, j in PAIRS)
+    r_five = float(np.ptp(dp[FIVE]))
+    r_sph  = float(np.abs(np.linalg.norm(np.delete(V, 1, axis=0), axis=1) - SQ83).max())
+    res = max(r_zero, r_pair, r_five, r_sph)
+    logS(f"[结构残差·自身法向] 零档={r_zero:.2e} 对内={r_pair:.2e} 五重={r_five:.2e} 球面={r_sph:.2e} → 综合={res:.2e}")
+    iu = np.triu_indices(17, 1); P_, Q_ = iu        # R7 棱长复核
+    d2 = ((V[P_]-V[Q_])**2).sum(1)
+    lab = np.argmin(np.abs(d2[:, None]-TGT[None, :]), axis=1)
+    rel_ = np.abs(d2-TGT[lab])/TGT[lab]; inl = rel_ < 1e-3
+    logS(f"[R7 棱长复核] 内点={int(inl.sum())}(应51) 计数={[int((lab[inl]==k).sum()) for k in range(3)]} "
+         f"最大相对残差={rel_[inl].max():.2e}（应~1e-15 ⇒ 文件确为LM精确解）")
+    logS("[镜距谱·逐对核对（模型单位）]")
+    for (i, j), frac in SPEC.items():
+        m = abs(dp[i]); e = float(frac)
+        logS(f"  对({i},{j}): {m:.15f} vs {frac}  相对残差 = {abs(m-e)/e:.1e}")
+    d_hat = float(abs(dp[FIVE]).mean())
+    delta = d_hat if model_units else d_hat*SQ83
+    w = V.mean(axis=0); nw = float(n@w)
+    logS(f"[δ] δ(模型) = {delta:.15f};  δ̂(归一) = {delta/SQ83:.15f}")
+    logS(f"[恒等式] |n·w| = {abs(nw):.15f}  vs  5δ/17 = {5*delta/17:.15f}  差 = {abs(abs(nw)-5*delta/17):.2e}")
+    logS(f"[|w|/R_c] = {np.linalg.norm(w)/R_env:.15f}")
+    return delta, res, nw
+
+FAMILY = (17, 19, 27, 3, 9, 81, 729, 531441)
+def family_ok(den):
+    d = abs(int(den))
+    for f in FAMILY:
+        while d % f == 0: d //= f
+    return d == 1
+
+def recognize(x, tag, REL_TOL):
+    logS(f"\n----- 识别目标: {tag} = {x:.15f} -----")
+    fr = Fraction(x).limit_denominator(10**6)
+    err = abs(float(fr)-x)/max(abs(x), 1e-12)
+    ok = err < REL_TOL and family_ok(fr.denominator)
+    logS(f"[有理·A.8] {fr}  相对残差 = {err:.1e}  分母结构族 = {family_ok(fr.denominator)}"
+         + ("   ← 定案" if ok else ""))
+    if ok: results[tag] = str(fr); return True
+    hits = []; v2 = x*x
+    for k in range(1, 5001):
+        m = v2*k*k; mi = int(round(m))
+        if mi > 1 and abs(m-mi) < 1e-13*m and abs(math.sqrt(mi)/k - x)/x < REL_TOL:
+            hits.append((mi, k))
+    logS("[√m/k] " + ("命中 " + ", ".join(f"√{a}/{b}" for a, b in hits[:6]) if hits else "无命中"))
+    if hits:
+        for a, b in hits[:3]: results.setdefault(tag, f"√{a}/{b}")
+        return True
+    if SYMPY_OK:                                   # R5: 仅在必要时启动
+        BASIS = [sqrt(k) for k in (2,3,5,7,13,17,19,38,57,86,89,257)] + [(1+sqrt(5))/2]
+        logS("[nsimplify] 前两通道落空，启动（逐次 flush，可观察是否假死）…")
+        for mode, y in [("直接", x), ("平方", x*x), ("×17", x*17), ("×27", x*27), ("×17·27", x*17*27)]:
+            logS(f"  … nsimplify·{mode} 运行中 …")
+            try:
+                c = nsimp(y, BASIS, tolerance=1e-18, rational=False, full=False)
+                cv = float(c.evalf(30)); r = abs(cv-y)/max(abs(y), 1e-12)
+                if not any(c.has(s) for s in BASIS):
+                    logS(f"[nsimplify·{mode}] {tag}: 无代数命中（平凡返回）")
+                else:
+                    logS(f"[nsimplify·{mode}] {tag}: {c}  相对残差 = {r:.1e}" + ("   ← 定案" if r < REL_TOL else ""))
+                    if r < REL_TOL: results.setdefault(tag, str(c)); return True
+            except Exception as e:
+                logS(f"[nsimplify·{mode}] {tag}: 失败 — {e}")
+    return False
+
+# ================= 主流程（R6: 无 SystemExit）=================
+FP = os.path.join(OUTDIR, "附录E_+Z.txt"); FM = os.path.join(OUTDIR, "附录E_-Z.txt")
+missing = [p for p in (FP, FM) if not os.path.isfile(p)]
+if missing:
+    logS(f"[中止] 缺少坐标文件: {missing} —— 请先运行附录E生成 v6。")
+else:
+    rA = analyze_file(FP, "+Z 支 [LM float64 · 自身法向]")
+    rB = analyze_file(FM, "-Z 支 [LM float64 · 自身法向]")
+    if rA and rB:
+        dA, resA, nwA = rA; dB, resB, nwB = rB
+        logS(f"\n[对映体核对] δ 两支差 = {abs(dA-dB):.2e};  n·w = {nwA:+.12f} / {nwB:+.12f}（应反号等值）")
+        res = max(resA, resB)
+        REL_TOL = max(1e-12, 1e3*res)
+        logS(f"\n[协议A.8'] 结构残差 = {res:.2e} → 相对阈值 = {REL_TOL:.1e}（下限1e-12）")
+        recognize(0.5*(dA+dB), "δ(模型单位)", REL_TOL)
+        recognize(0.5*(float(np.linalg.norm(np.loadtxt(FP).mean(axis=0)))/SQ83), "|w|/R_c", REL_TOL)
+        logS("\n" + "="*72)
+        logS("[总判·预注册判据]")
+        if results:
+            for k, v in results.items(): logS(f"  {k} ⇒ {v}")
+            logS("  ⇒ δ 闭式定案：附录F收官，§9(i) 关闭，恒等式 |n·w|=(5/17)δ̂ 全链闭合。")
+        else:
+            logS("  三通道落空 ⇒ 升格 §9 开放问题（float64 + sympy 就绪前提下）。")
+        logS("="*72)
+except_ = None
+FS.close()
+print("\n完成。")

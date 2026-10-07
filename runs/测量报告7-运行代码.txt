@@ -1,0 +1,67 @@
+# -*- coding: utf-8 -*-
+# 测量报告7：n=4 基准点（正四面体）χ 测量与手性群普查（修正版：已移除作废死代码）
+import datetime
+import numpy as np
+from itertools import permutations
+
+OUTDIR = r"D:\物理数学\数学\理想球体的有限不可实现性"
+STAMP  = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+F7 = open(OUTDIR + "\\测量报告7_" + STAMP + ".txt", "w", encoding="utf-8")
+def log7(*a): print(*a, file=F7)
+log7(f"生成时间: {datetime.datetime.now().isoformat()}")
+log7("[n=4 基准点] 正四面体，棱长 2（单位球亲吻）")
+
+s = np.sqrt(2.0) / 2.0
+V = np.array([[ s, s, s],
+              [ s,-s,-s],
+              [-s, s,-s],
+              [-s,-s, s]])          # 两两距离恒 = 2
+
+D = np.linalg.norm(V[:,None,:]-V[None,:,:], axis=2)
+log7(f"棱长普查: min={D[D>1e-12].min():.12f}, max={D[D>1e-12].max():.12f}  （应恒 =2）")
+
+Rc  = float(np.linalg.norm(V, axis=1).max())     # 外接半径（应 √(3/2)）
+cen = V.mean(axis=0)
+w   = float(np.linalg.norm(cen))
+log7(f"外接半径 R_c = {Rc:.12f}  （闭式 √(3/2) = {np.sqrt(1.5):.12f}）")
+log7(f"质心 = ({cen[0]:+.3e}, {cen[1]:+.3e}, {cen[2]:+.3e})")
+log7(f"|w| = {w:.3e}   |w|/R_c = {w/Rc:.3e}   ← 理论精确值 0")
+log7(f"χ(4) = ε = 2|w|/R_c = {2*w/Rc:.3e}   ← 理论精确值 0")
+
+# 手性群普查：距离矩阵判据（唯一保留的正确版本）
+# 判据：σ 保距 ⇔ D[i][j] == D[σ(i)][σ(j)] 对全部 i,j 成立
+idx = list(range(4))
+order, n_plus, n_minus = 0, 0, 0
+for sigma in permutations(idx):
+    ok = all(abs(D[i][j] - D[sigma[i]][sigma[j]]) < 1e-9
+             for i in idx for j in idx)
+    if ok:
+        order += 1
+        # 行列式符号：σ 诱导的 4×4 置换矩阵的 det 乘以坐标矩阵适配的符号
+        # 更稳健：用质心化坐标 X (4×3)，σ 保距 ⇒ 存在正交 Q 使 X[σ] = X @ Q
+        Xc = V - cen
+        A  = Xc[list(sigma)]            # 4×3，行按 σ 重排
+        Q, res, rank, sv = np.linalg.lstsq(Xc, A, rcond=None)  # 最小二乘解 Q(3×3)
+        detQ = np.linalg.det(Q)
+        if detQ > 0: n_plus += 1
+        else:        n_minus += 1
+log7(f"等距群阶 = {order}   ← 预期 24（T_d ≅ S₄）")
+log7(f"det>0 元素 = {n_plus}，det<0 元素 = {n_minus}   ← 预期 12/12")
+log7("判定：含反射元素 ⇒ 非手性；χ(4)=0 精确成立。" if n_minus > 0 else "判定：异常，请核查。")
+
+log7("\n[χ 图景预注册预言]（供 n=5/6/7 后续测量对账）")
+log7("  χ(4)=χ(5)=χ(6)=0（零亏角链）；χ(7)>0 首次非零（白球步7注入 δ_F）")
+log7("  手性开关时刻 = Frank 亏角注入时刻")
+
+# 可选：场景内建 4 球可视化
+try:
+    import bpy
+    for k, v in enumerate(V, 1):
+        bpy.ops.mesh.primitive_uv_sphere_add(radius=1.0, location=tuple(v))
+        bpy.context.object.name = f"基准球{k}"
+    log7("可视化：基准球1–4 已建（半径1，亲吻）")
+except Exception:
+    pass
+
+F7.close()
+print("报告7已写入:", OUTDIR + "\\测量报告7_" + STAMP + ".txt")

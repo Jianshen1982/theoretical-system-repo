@@ -1,0 +1,98 @@
+# -*- coding: utf-8 -*-
+# sympy裁决·无sympy版：有理扫描 + √m/k 扫描 + 定向候选核对 + 账目核对
+# 输入：附录E float64 精化坐标（两支各17行）；空则回退 Blender float32（结果标 [float32]）
+import datetime, math
+from fractions import Fraction
+import numpy as np
+
+OUTDIR = r"D:\物理数学\数学\理想球体的有限不可实现性"
+STAMP  = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+FS = open(OUTDIR + "\\sympy裁决_无sympy版_" + STAMP + ".txt", "w", encoding="utf-8")
+def logS(*a): print(*a, file=FS)
+logS(f"生成时间: {datetime.datetime.now().isoformat()}")
+
+COORDS_PLUS_Z  = ""    # ← 粘贴 +Z 的 17 行 float64 坐标（x,y,z 逗号或空格分隔，# 后为注释）
+COORDS_MINUS_Z = ""    # ← 粘贴 -Z 的 17 行
+
+def parse(s):
+    rows=[]
+    for line in s.strip().splitlines():
+        line = line.split("#")[0].strip()
+        if line:
+            rows.append([float(t) for t in line.replace(","," ").split()])
+    return np.array(rows) if len(rows)==17 else None
+
+def load(key, name):
+    A = parse(key)
+    if A is not None: return A, "float64(粘贴)"
+    import bpy
+    k = name.replace(" ","").lower()
+    nm = next(n for n in bpy.data.objects.keys() if n.replace(" ","").lower()==k)
+    ob = bpy.data.objects[nm]; M = ob.matrix_world
+    return np.array([(M@v.co)[:] for v in ob.data.vertices]), "float32(Blender回退)"
+
+IDX2, IDX11 = 2, 11        # 0基索引，与报告6生效代码一致（勿改）
+
+def analyze(V, tag):
+    logS(f"\n========== {tag} ==========")
+    c0i = int(np.argmin([np.linalg.norm(V-x,axis=1).max() for x in V]))      # 中心顶点
+    c0  = V[c0i]; rel = V - c0
+    Rc  = float(np.linalg.norm(rel,axis=1).max())
+    w   = rel.mean(axis=0); nrm = float(np.linalg.norm(w))
+    logS(f"中心顶点 idx={c0i}; R_c = {Rc:.12f}; |w| = {nrm:.12f}; |w|/R_c = {nrm/Rc:.12f}")
+    nn = V[IDX11] - V[IDX2]; nn = nn/np.linalg.norm(nn)
+    if nn[2] < 0: nn = -nn
+    logS(f"n = ({nn[0]:+.12f}, {nn[1]:+.12f}, {nn[2]:+.12f});  n_y-1/3 = {nn[1]-1/3:.3e}")
+    nw = float(nn @ w)
+    dp = rel @ nn
+    logS(f"n·w = {nw:+.12f}")
+    logS(f"[账目核对] Σn·p_i/17 = {dp.mean():+.12f}  vs  n·w = {nw:+.12f}  差 = {abs(dp.mean()-nw):.2e}")
+    logS("逐顶点镜距: " + " ".join(f"{x:+.6f}" for x in sorted(dp, key=abs)))
+    return nrm/Rc, nw
+
+Va,  src_a = load(COORDS_PLUS_Z,  "+z闭合构型")
+Vb,  src_b = load(COORDS_MINUS_Z, "-z闭合构型")
+t1a, t2a = analyze(Va, f"+Z [{src_a}]")
+t1b, t2b = analyze(Vb, f"-Z [{src_b}]")
+logS(f"\n[对映体核对] |w|/R_c 差 = {abs(t1a-t1b):.2e};  n·w 和 = {t2a+t2b:+.3e}（应≈0）")
+
+def rat_scan(val, tag, dmax=10**6):
+    f = Fraction(val).limit_denominator(dmax); err = abs(float(f)-val)
+    hit = err < 5e-12
+    logS(f"[有理扫描] {tag}: {f} = {float(f):.12f}  残差 = {err:.1e}" + ("   ← 命中" if hit else ""))
+    return hit
+
+def surd_scan(val, tag, kmax=2000):
+    hits = []; v2 = val*val
+    for k in range(1, kmax+1):
+        m = v2*k*k; mi = int(round(m))
+        if mi > 1 and abs(m-mi) < 4e-12*m:
+            r = abs(math.sqrt(mi)/k - abs(val))
+            if r < 1e-10: hits.append((r, mi, k))
+    hits.sort()
+    logS(f"[√m/k 扫描] {tag}:" + ("" if hits else "  无命中"))
+    for r,m,k in hits[:6]:
+        logS(f"  √{m}/{k} = {math.sqrt(m)/k:.12f}  残差 = {r:.1e}   ← 命中")
+    return bool(hits)
+
+LOCKED = math.sqrt(8.0/3.0)
+def targeted(t1, t2):
+    logS("\n[定向候选核对]")
+    wm = t1*LOCKED                       # |w| 模型单位
+    cand = [("8√34/153 (|w|模型)",  wm, 8*math.sqrt(34)/153),
+            ("392/10125 (n·w)",     abs(t2), 392/10125),
+            ("(n·w)×729 vs 28.224", abs(t2)*729, 28.224)]
+    for name, a, b in cand:
+        logS(f"  {name}: {a:.12f} vs {b:.12f}  相对残差 = {abs(a-b)/max(abs(b),1e-12):.1e}")
+
+for val, tag in [(t1a,"|w|/R_c"), (abs(t2a),"|n·w|")]:
+    logS(f"\n----- 目标: {tag} = {val:.12f} -----")
+    h1 = rat_scan(val, tag); h2 = surd_scan(val, tag); h3 = surd_scan(val*val, tag+"²")
+    if not (h1 or h2 or h3):
+        logS("  → 本版三扫描全部落空；如需通用 nsimplify（高次代数域），请按路线A安装 sympy 后重跑。")
+
+targeted(t1a, t2a)
+logS("\n[总判] 任一扫描以 <1e-10 命中 ⇒ 闭式候选定案（仍需 float64 粘贴坐标复核）；")
+logS("      全部落空 ⇒ 依纪律2.7(a) 记 [待定]，nsimplify 兜底。")
+FS.close()
+print("已写入:", OUTDIR + "\\sympy裁决_无sympy版_" + STAMP + ".txt")

@@ -1,0 +1,214 @@
+import bpy, math, datetime
+import numpy as np
+from collections import Counter
+
+# ================= 输出：锁定路径 + 时间戳 =================
+F64 = np.float64
+OUTDIR = r"D:\物理数学\数学\理想球体的有限不可实现性"
+STAMP = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+OUT = OUTDIR + "\\测量报告2_" + STAMP + ".txt"
+f = open(OUT, "w", encoding="utf-8")
+def log(*a): print(*a, file=f)
+
+log(f"生成时间: {datetime.datetime.now().isoformat()}")
+log("精度声明: Blender坐标为float32存储；本报告以float64运算，")
+log("          量化噪声天花板 ~±2e-6，填表时误差栏统一取 ±2e-6")
+
+LOCKED = F64(math.sqrt(F64(8)/F64(3)))                 # √(8/3)=1.6329932
+SIGN = [("锁定",  F64(1.0)),
+        ("档I",   F64(8)*math.sqrt(F64(6))/F64(18)),   # 1.088662
+        ("档II",  F64(2.241480)/F64(2)),
+        ("档III", math.sqrt(F64(1292)/F64(243))/F64(2))]
+TOL = F64(0.004)
+
+# ================= 鲁棒对象查找 =================
+def OB(key):
+    """忽略大小写与空格差异查找对象"""
+    k = key.replace(" ", "").lower()
+    for name in bpy.data.objects.keys():
+        if name.replace(" ", "").lower() == k:
+            return bpy.data.objects[name]
+    raise KeyError(f"找不到对象：{key}；现有：{list(bpy.data.objects.keys())}")
+
+SOLIDS = ["原始开启构型", "+z闭合构型", "-z闭合构型"]   # 大小写由 OB 兜底
+
+# 规范序：中心→北极→上环(顺时针,5)→环间弛豫→下环(顺时针,4)→南极弛豫
+BALL_OBJECTS = [
+    "红球",                                        # 0  中心
+    "篮球",                                        # 1  北极
+    "黄球1", "黄球2", "黄球3", "黄球4", "黄球5",   # 2-6  上环
+    "白球",                                        # 7  环间弛豫(闭合锚)
+    "黄球6", "黄球7", "黄球8", "黄球9",            # 8-11 下环
+    "棕球",                                        # 12 南极弛豫(±Z闭合点)
+]
+idx = {n: i for i, n in enumerate(BALL_OBJECTS)}
+for n in BALL_OBJECTS:
+    OB(n)                                          # 名字不齐在这里直接报错
+
+# ================= 1) 13 球心坐标与距谱 =================
+C = np.array([OB(n).location[:] for n in BALL_OBJECTS], dtype=F64)
+log("\n[13 球心坐标]（规范序，读自对象 location，float64）")
+for i, (n, c) in enumerate(zip(BALL_OBJECTS, C)):
+    log(f"  {i:>2} {n:<5} ({c[0]:+.6f}, {c[1]:+.6f}, {c[2]:+.6f})")
+
+D = np.linalg.norm(C[:, None, :] - C[None, :, :], axis=2)
+
+log("\n[红球径向核对]  中心到12壳层球距离/锁定棱，应全为 1.0")
+for j in range(1, 13):
+    r = D[0, j] / LOCKED
+    log(f"  红球-{BALL_OBJECTS[j]:<5} 比值={r:.6f}   "
+        f"{'✓锁定' if abs(r-1)<TOL else '✗偏离'}")
+
+log("\n[13球心距谱]  每行：到其余12球距离/锁定棱，升序")
+for i in range(13):
+    ds = sorted(D[i][D[i] > F64(1e-9)] / LOCKED)
+    log(f"  {BALL_OBJECTS[i]:<5} " + " ".join(f"{d:.6f}" for d in ds))
+
+# ================= 2) 规范拓扑核对（27条预测邻接） =================
+log("\n[规范拓扑核对]  预测邻接 → 实测档位")
+EXPECT = (
+    [("篮球", f"黄球{k}") for k in range(1, 6)] +            # 北极辐条 ×5
+    [(f"黄球{k}", f"黄球{k%5+1}") for k in range(1, 6)] +    # 上环五边形 ×5
+    [("白球", f"黄球{k}") for k in range(1, 6)] +            # 白球上行 ×5
+    [("白球", f"黄球{k}") for k in range(6, 10)] +           # 白球下行 ×4
+    [(f"黄球{k}", f"黄球{(k-6)%4+6}") for k in range(6, 10)] +  # 下环 ×4
+    [("棕球", f"黄球{k}") for k in range(6, 10)]             # 南极辐条 ×4
+)
+seen = set(); tally_top = Counter()
+for a, b in EXPECT:
+    i, j = idx[a], idx[b]
+    seen.add(frozenset((i, j)))
+    r = D[i, j] / LOCKED
+    nm = next((n for n, ref in SIGN if abs(r - ref) < TOL), "★谱外")
+    tally_top[nm] += 1
+    log(f"  {a:<5}-{b:<5}  比值={r:.6f}  {nm}")
+log("  预测邻接统计:", dict(tally_top))
+
+log("\n[预测外接触扫描]  预测清单之外、距离<1.5×锁定的壳层对：")
+extra = 0
+for i in range(1, 13):
+    for j in range(i+1, 13):
+        if frozenset((i, j)) in seen: continue
+        r = D[i, j] / LOCKED
+        if r < F64(1.5):
+            nm = next((n for n, ref in SIGN if abs(r - ref) < TOL), "★谱外")
+            log(f"  {BALL_OBJECTS[i]:<5}-{BALL_OBJECTS[j]:<5} "
+                f"比值={r:.6f}  {nm}")
+            extra += 1
+if extra == 0:
+    log("  （无）——壳层接触图与预测邻接完全一致")
+
+# ================= 3) 三构型棱长谱普查 =================
+for NAME in SOLIDS:
+    ob = OB(NAME)
+    V = np.array([v.co[:] for v in ob.data.vertices], dtype=F64)
+    log("="*66); log(f"{NAME}:  V={len(V)}  E={len(ob.data.edges)}")
+    tally = Counter(); rows = []
+    for e in ob.data.edges:
+        a, b = int(e.vertices[0]), int(e.vertices[1])
+        L = np.sqrt(np.sum((V[a]-V[b]).astype(F64)**2))
+        r = L / LOCKED
+        nm = next((n for n, ref in SIGN if abs(r - ref) < TOL), "★谱外")
+        rows.append((a, b, L, r, nm)); tally[nm] += 1
+    for a, b, L, r, nm in sorted(rows, key=lambda x: x[2]):
+        log(f"  棱 {a:>2}-{b:<2}  L={L:.6f}  比值={r:.6f}  {nm}")
+    log("  谱统计:", dict(tally))
+
+# ================= 4) 等距检验（距离矩阵回溯匹配版） =================
+v1 = np.array([v.co[:] for v in OB("+z闭合构型").data.vertices], dtype=F64)
+v2 = np.array([v.co[:] for v in OB("-z闭合构型").data.vertices], dtype=F64)
+n = len(v1)
+assert n == len(v2), f"两构型顶点数不同: {n} vs {len(v2)}"
+log("="*66)
+log(f"[等距检验]  构造顶点数 n = {n}")
+
+D1 = np.linalg.norm(v1[:, None, :] - v1[None, :, :], axis=2)
+D2 = np.linalg.norm(v2[:, None, :] - v2[None, :, :], axis=2)
+
+EPS = 1e-4          # float32 量化噪声量级之上的配对容差
+perm = [None] * n
+used = [False] * n
+
+# 候选启发：v2 中与 v1[i] 到自身质心距离相近的点优先（弱过滤，仅提速）
+c1c = np.linalg.norm(v1 - v1.mean(0), axis=1)
+c2c = np.linalg.norm(v2 - v2.mean(0), axis=1)
+cand = [[j for j in range(n) if abs(c2c[j] - c1c[i]) < EPS * 10]
+        for i in range(n)]
+if any(len(c) == 0 for c in cand):
+    cand = [list(range(n)) for _ in range(n)]   # 过滤失效则全候选+纯剪枝
+
+# 约束最强的顶点先配（剪枝效率最大化）
+order = sorted(range(n), key=lambda i: len(cand[i]))
+
+def backtrack(t):
+    if t == n:
+        return True
+    i = order[t]
+    for j in cand[i]:
+        if used[j]:
+            continue
+        ok = True
+        for k in range(t):                       # 与所有已配顶点距离相容
+            ik = order[k]
+            if abs(D1[i, ik] - D2[j, perm[ik]]) > EPS:
+                ok = False
+                break
+        if not ok:
+            continue
+        perm[i] = j
+        used[j] = True
+        if backtrack(t + 1):
+            return True
+        perm[i] = None
+        used[j] = False
+    return False
+
+assert backtrack(0), "回溯匹配失败：两构型距离矩阵不相容（非全等？）"
+log("  回溯匹配成功（距离矩阵逐对相容）")
+
+P = v2[perm]
+c1, c2 = v1 - v1.mean(0), P - P.mean(0)
+U, S, Vt = np.linalg.svd(c1.T @ c2)
+R = U @ Vt                                    # 一般正交算子，不预设类型
+det = np.linalg.det(R)
+res = np.linalg.norm(c1 @ R - c2, axis=1)
+log(f"[等距算子拟合 +z→-z]  det(R) = {det:+.6f}")
+log("  判定: " + ("det<0 → 镜面反射型（镜像对称，非旋转）"
+                 if det < 0 else "det>0 → 纯旋转型（与镜像命题矛盾）"))
+log(f"  配对残差: max = {res.max():.6e}, mean = {res.mean():.6e}")
+log(f"  构造顶点置换 perm = {perm}")
+
+
+# ================= 5) 镜像结构预测核对（预注册） =================
+log("\n[镜像预测核对]  预测①-④（跑前已立字据）")
+if det < 0:
+    w, vec = np.linalg.eig(R)
+    n = np.real(vec[:, int(np.argmin(np.abs(w - F64(-1))))])
+    n = n / np.linalg.norm(n)
+    mid = (v1.mean(0) + P.mean(0)) / F64(2)
+    log(f"  镜面法向 n ≈ ({n[0]:+.6f}, {n[1]:+.6f}, {n[2]:+.6f})")
+    log(f"  镜面过点 ≈ ({mid[0]:+.6f}, {mid[1]:+.6f}, {mid[2]:+.6f})")
+
+    r_white = C[idx["白球"]]
+    log(f"  预测① n_z ≈ 0           实测 n_z = {n[2]:+.6f}   "
+        f"{'✓' if abs(n[2]) < 0.01 else '✗'}")
+    rhat = r_white / np.linalg.norm(r_white)
+    dot = float(n @ rhat)
+    log(f"  预测② n·r̂_白 ≈ 0        实测 = {dot:+.6f}   "
+        f"{'✓' if abs(dot) < 0.01 else '✗'}")
+    npred = np.cross(np.array([0, 0, 1], dtype=F64), rhat)
+    npred = npred / np.linalg.norm(npred)
+    cosang = float(abs(n @ npred))
+    log(f"  预测③ n ∥ ẑ×r̂_白       |cos| = {cosang:.6f}   "
+        f"{'✓' if cosang > 0.9999 else '✗'}")
+    log("  预测④ 固定点 ⊇ {红,蓝,白,棕}（构造顶点层面见下表恒位项）")
+
+    log("\n  构造顶点置换表（perm: +z顶点i → -z顶点perm[i]）：")
+    for i in range(len(perm)):
+        mark = "  (固定点)" if perm[i] == i else ""
+        log(f"    顶点{i:>2} → 顶点{perm[i]:>2}{mark}")
+else:
+    log("  det(R) > 0，竖直镜面预测不成立，检查构型构造")
+
+f.close()
+print("报告已写入:", OUT)

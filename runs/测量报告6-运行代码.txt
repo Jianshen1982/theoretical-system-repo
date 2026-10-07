@@ -1,0 +1,62 @@
+import bpy, datetime, math
+import numpy as np
+
+OUTDIR = r"D:\物理数学\数学\理想球体的有限不可实现性"
+STAMP  = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+F6 = open(OUTDIR + "\\测量报告6_" + STAMP + ".txt", "w", encoding="utf-8")
+def log6(*a): print(*a, file=F6)
+log6(f"生成时间: {datetime.datetime.now().isoformat()}")
+
+def OB(key):
+    k = key.replace(" ", "").lower()
+    for name in bpy.data.objects.keys():
+        if name.replace(" ", "").lower() == k:
+            return bpy.data.objects[name]
+    raise KeyError(f"找不到对象：{key}")
+
+BALLS = ["红球","篮球","黄球1","黄球2","黄球3","黄球4","黄球5",
+         "白球","黄球6","黄球7","黄球8","黄球9","棕球"]
+BC = np.array([OB(nm).matrix_world.translation[:] for nm in BALLS])
+red = BC[0]
+log6(f"红球心（世界） = ({red[0]:+.6f}, {red[1]:+.6f}, {red[2]:+.6f})")
+bd = BC - red
+bd = bd / np.linalg.norm(bd, axis=1)[:, None]
+
+R_TET = math.sqrt(8.0/3.0)          # 1.6329932 构造单位外接半径
+res = {}
+for tag, key in [("+z", "+z闭合构型"), ("-z", "-z闭合构型")]:
+    ob = OB(key); M = ob.matrix_world
+    O  = np.array(M.translation[:])
+    V  = np.array([(M @ v.co)[:] for v in ob.data.vertices])
+    D  = np.linalg.norm(V[:,None,:]-V[None,:,:], axis=2)
+    ci = int(np.argmin(D.max(axis=1)))       # 中心顶点：到其余各点最大距离最小者
+    Rc = float(D.max(axis=1)[ci])
+    cen = V.mean(axis=0); w = cen - V[ci]
+    dO  = np.linalg.norm(V - O, axis=1)
+    log6(f"\n========== {tag}闭合构型 ==========")
+    log6(f"物体原点 O = ({O[0]:+.6f}, {O[1]:+.6f}, {O[2]:+.6f})")
+    log6(f"中心顶点 idx={ci} 位置=({V[ci][0]:+.6f},{V[ci][1]:+.6f},{V[ci][2]:+.6f})")
+    log6(f"顶点到原点: min={dO.min():.6f}, max={dO.max():.6f}"
+         f"   ← +z 应为 0 与 1.000003")
+    log6(f"外接半径 R_c = {Rc:.6f}；尺度 s = R_c/√(8/3) = {Rc/R_TET:.6f}"
+         f"   ← +z 预期 0.612372=√(3/8)，-z 预期 1.000000")
+    log6(f"质心偏移 |w| = {np.linalg.norm(w):.6f}")
+    log6(f"无量纲 |w|/R_c = {np.linalg.norm(w)/Rc:.7f}   ← 对映体应逐位相同")
+    nn = V[11] - V[2]; nn = nn/np.linalg.norm(nn)
+    if nn[2] < 0: nn = -nn                   # 与 n_z=+0.9024 同向
+    log6(f"n·w（n 定向后） = {float(nn @ w):+.6f}   ← ±z 应反号")
+    log6(f"|O − 红球心|            = {np.linalg.norm(O - red):.6f}")
+    log6(f"|中心顶点 − 红球心|     = {np.linalg.norm(V[ci] - red):.6f}   ← 裁决'扫的是谁'")
+    dirs = V - V[ci]; dirs = dirs/np.linalg.norm(dirs, axis=1)[:, None]
+    log6(f"16 脚手架方向×12 球方向 最大点积 = {float((dirs @ bd.T).max()):.6f}"
+         f"   ← 注意：+z 已被旋转，此行只对未旋转的 -z 有效")
+    res[tag] = (Rc, float(np.linalg.norm(w)), float(nn @ w))
+
+r1,w1,s1 = res["+z"]; r2,w2,s2 = res["-z"]
+log6("\n[对映体不变量核对]")
+log6(f"  |w|    : +z={w1:.6f}  -z={w2:.6f}  差={abs(w1-w2):.2e}")
+log6(f"  |w|/R_c: +z={w1/r1:.7f}  -z={w2/r2:.7f}")
+log6(f"  n·w    : +z={s1:+.6f}  -z={s2:+.6f}  ← 应反号等值")
+log6("\n[sympy 目标] |w|/R_c 精确值；√(3/8) 核对；2.874479 是否有意义")
+F6.close()
+print("报告6已写入:", OUTDIR + "\\测量报告6_" + STAMP + ".txt")

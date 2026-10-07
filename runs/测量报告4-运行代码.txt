@@ -1,0 +1,154 @@
+import bpy, math, datetime, itertools
+import numpy as np
+from collections import Counter
+
+F64 = np.float64
+OUTDIR = r"D:\物理数学\数学\理想球体的有限不可实现性"
+STAMP = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+F4 = open(OUTDIR + "\\测量报告4_" + STAMP + ".txt", "w", encoding="utf-8")
+def log4(*a): print(*a, file=F4)
+log4(f"生成时间: {datetime.datetime.now().isoformat()}")
+
+def OB(key):
+    k = key.replace(" ", "").lower()
+    for name in bpy.data.objects.keys():
+        if name.replace(" ", "").lower() == k:
+            return bpy.data.objects[name]
+    raise KeyError(f"找不到对象：{key}")
+
+BALL_OBJECTS = ["红球","篮球","黄球1","黄球2","黄球3","黄球4","黄球5",
+                "白球","黄球6","黄球7","黄球8","黄球9","棕球"]
+idx = {n: i for i, n in enumerate(BALL_OBJECTS)}
+C = np.array([OB(nm).location[:] for nm in BALL_OBJECTS], dtype=F64)
+
+v1 = np.array([v.co[:] for v in OB("+z闭合构型").data.vertices], dtype=F64)
+v2 = np.array([v.co[:] for v in OB("-z闭合构型").data.vertices], dtype=F64)
+n_ = len(v1)
+
+# ---- 镜面法向：由回溯置换的对换对 (2,11)(3,10) 连线重建 ----
+D1 = np.linalg.norm(v1[:,None,:]-v1[None,:,:], axis=2)
+D2 = np.linalg.norm(v2[:,None,:]-v2[None,:,:], axis=2)
+EPS = 1e-4
+perm = [None]*n_; used = [False]*n_
+c1c = np.linalg.norm(v1-v1.mean(0),axis=1)
+c2c = np.linalg.norm(v2-v2.mean(0),axis=1)
+cand = [[j for j in range(n_) if abs(c2c[j]-c1c[i])<EPS*10] for i in range(n_)]
+if any(len(c)==0 for c in cand): cand = [list(range(n_))]*n_
+order = sorted(range(n_), key=lambda i: len(cand[i]))
+def bt(t):
+    if t == n_: return True
+    i = order[t]
+    for j in cand[i]:
+        if used[j]: continue
+        if all(abs(D1[i,order[k]]-D2[j,perm[order[k]]]) <= EPS for k in range(t)):
+            perm[i] = j; used[j] = True
+            if bt(t+1): return True
+            perm[i] = None; used[j] = False
+    return False
+assert bt(0), "回溯失败"
+P = v2[perm]
+a, b = v1-v1.mean(0), P-P.mean(0)
+U,S,Vt = np.linalg.svd(a.T @ b)
+R = U @ Vt
+nvec = np.real(np.linalg.eig(R)[1][:, int(np.argmin(
+    np.abs(np.linalg.eig(R)[0]-F64(-1))))])
+nvec = nvec/np.linalg.norm(nvec)
+if float(nvec[2]) < 0: nvec = -nvec          # 定向：与+z侧同侧
+log4(f"det(R) = {np.linalg.det(R):+.6f}   n = ({nvec[0]:+.6f},{nvec[1]:+.6f},{nvec[2]:+.6f})")
+
+# ---- 7c) 去重 + 全等距群枚举 ----
+def dedup(V, tol=1e-6):
+    reps, members = [], []
+    for i in range(len(V)):
+        for u, r in enumerate(reps):
+            if np.linalg.norm(V[i]-V[r]) < tol:
+                members[u].append(i); break
+        else:
+            reps.append(i); members.append([i])
+    return V[reps], members
+
+W1, M1 = dedup(v1); W2, M2 = dedup(v2)
+log4(f"\n[去重] v1 互异点 {len(W1)}，类大小 {[len(m) for m in M1]}")
+log4(f"       v2 互异点 {len(W2)}，类大小 {[len(m) for m in M2]}")
+assert len(W1) == len(W2)
+
+def full_iso_distinct(A, B, eps=1e-4):
+    m = len(A)
+    DA = np.linalg.norm(A[:,None,:]-A[None,:,:], axis=2)
+    DB = np.linalg.norm(B[:,None,:]-B[None,:,:], axis=2)
+    def vol(q):
+        E = np.stack([A[q[0]]-A[q[3]], A[q[1]]-A[q[3]], A[q[2]]-A[q[3]]])
+        return abs(np.linalg.det(E))
+    quad = max(itertools.combinations(range(m), 4), key=vol)
+    prs = list(itertools.combinations(range(4), 2))
+    dq = [DA[quad[x],quad[y]] for x,y in prs]
+    sols = []
+    for cd in itertools.permutations(range(m), 4):
+        if all(abs(DB[cd[x],cd[y]]-d) < eps for d,(x,y) in zip(dq,prs)):
+            X, Y = A[list(quad)], B[list(cd)]
+            cx, cy = X-X.mean(0), Y-Y.mean(0)
+            U_,_,Vt_ = np.linalg.svd(cx.T @ cy)
+            R_ = U_ @ Vt_
+            img = A @ R_ + (Y.mean(0) - X.mean(0) @ R_)
+            Cst = np.linalg.norm(B[None,:,:]-img[:,None,:], axis=2)
+            pm = [int(np.argmin(Cst[i])) for i in range(m)]
+            if max(Cst[i,pm[i]] for i in range(m)) > 1e-3: continue
+            if len(set(pm)) != m: continue
+            if np.max(np.abs(np.linalg.norm(
+                    B[pm][:,None,:]-B[pm][None,:,:], axis=2)-DA)) > eps:
+                continue
+            sols.append(tuple(pm))
+    return sorted(set(sols))
+
+Gc = full_iso_distinct(W1, W2)
+Gs = full_iso_distinct(W1, W1)
+log4(f"\n[全置换群·互异点]  跨构型 |G| = {len(Gc)}；自对称 |G| = {len(Gs)}")
+for k, s in enumerate(Gs):
+    Pt = W1[list(s)]; aa, bb = W1-W1.mean(0), Pt-Pt.mean(0)
+    U_,_,Vt_ = np.linalg.svd(aa.T @ bb)
+    log4(f"  自对称 σ{k}: det={np.linalg.det(U_@Vt_):+.2f}  perm={list(s)}")
+for k, s in enumerate(Gc):
+    Pt = W2[list(s)]; aa, bb = W1-W1.mean(0), Pt-Pt.mean(0)
+    U_,_,Vt_ = np.linalg.svd(aa.T @ bb)
+    log4(f"  跨构型 σ{k}: det={np.linalg.det(U_@Vt_):+.2f}  perm={list(s)}")
+
+# ---- 7d) 重合类验证 + 解析探针 ----
+log4("\n[重合类验证]")
+for u, m in enumerate(M1):
+    p = v1[m[0]]
+    log4(f"  v1 类{u}（{len(m)}个点 {m}）: p=({p[0]:+.6f},{p[1]:+.6f},{p[2]:+.6f})"
+         f"  n·p={float(nvec @ p):+.6f}")
+for u, m in enumerate(M2):
+    p = v2[m[0]]
+    log4(f"  v2 类{u}（{len(m)}个点 {m}）: p=({p[0]:+.6f},{p[1]:+.6f},{p[2]:+.6f})"
+         f"  n·p={float(nvec @ p):+.6f}")
+p0c = v1[M1[0][0]] if len(M1[0])>1 else None
+if p0c is not None:
+    s0 = float(nvec @ p0c)
+    ref0 = p0c - 2*s0*nvec
+    log4(f"  五重合类反射像 = ({ref0[0]:+.6f},{ref0[1]:+.6f},{ref0[2]:+.6f})，"
+         f"模长² = {float(ref0 @ ref0):.6f}（应≈8/3={8/3:.6f}）")
+
+pw = C[idx["白球"]]
+d = v1[11]-v1[2]
+n2 = d/np.linalg.norm(d)
+if float(n2 @ nvec) < 0: n2 = -n2
+log4("\n[解析探针]  噪声阈 2e-5")
+for nm, r_ in [
+    ("n_y = 1/3",            float(nvec[1] - 1/3)),
+    ("n_z = -y_白",          float(nvec[2] + pw[1])),
+    ("n_x² = 8/9 - y_白²",   float(nvec[0]**2 - (8/9 - pw[1]**2))),
+    ("y_白 = +2√2·x_白",     float(pw[1] - 2*math.sqrt(2)*pw[0])),
+    ("cos∠(白,棕) = 1/2",    float(C[idx['白球']] @ C[idx['棕球']] /
+                                   (np.linalg.norm(C[idx['白球']])*np.linalg.norm(C[idx['棕球']]))) - 0.5)]:
+    log4(f"  {nm:<22} 残差 = {r_:+.2e}")
+log4(f"  镜对连线重建 n：(p11-p2)/|·|，偏差 = {np.linalg.norm(n2-nvec):.2e}")
+log4(f"  |p11-p2| = {np.linalg.norm(d):.6f}（候选精确值 80/27 = {80/27:.6f}）")
+
+# ---- 模长球面核查 ----
+mods = np.sum(v1*v1, axis=1)
+log4("\n[模长球面]  各顶点 |p|²（应≈8/3）:")
+log4("  " + " ".join(f"{x:.6f}" for x in mods))
+
+F4.close()
+print("报告4已写入:", OUTDIR + "\\测量报告4_" + STAMP + ".txt")

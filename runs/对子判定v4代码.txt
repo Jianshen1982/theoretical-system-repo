@@ -1,0 +1,91 @@
+# -*- coding: utf-8 -*-
+# 对子判定 v4: B(Blender镜像13节点) vs C(-Z构型13节点)
+# 检验1 真旋转对齐 | 检验2 中心反演 | 检验3 允许反射(对映体判据)
+import bpy, os, datetime
+import numpy as np
+from math import degrees, acos
+
+NAME_B = "+Z闭合构型.002"
+NAME_C = "-Z闭合构型"
+OUT_DIR = r"D:\理论体系\测量代码 & 测量结果"
+
+def group_points(prefix):
+    objs = [o for o in bpy.data.objects if o.type=='MESH' and o.name.startswith(prefix)]
+    if not objs: return None
+    dg = bpy.context.evaluated_depsgraph_get()
+    raw = []
+    for o in objs:
+        oe = o.evaluated_get(dg); me = oe.to_mesh(); mw = oe.matrix_world
+        raw += [list(mw @ v.co) for v in me.vertices]
+        oe.to_mesh_clear()
+    pts = np.array(raw)
+    CLUSTER_TOL = 1e-4
+    order = np.argsort(np.linalg.norm(pts - pts.mean(0), axis=1))
+    nodes = []
+    for p in pts[order]:
+        if nodes and min(np.linalg.norm(np.array(n)-p) for n in nodes) < CLUSTER_TOL:
+            continue
+        nodes.append(list(p))
+    return np.array(nodes)
+
+def align_rmsd(A, B, reflect=False, iters=60):
+    """reflect=False: 只许真旋转; True: 允许反射(对映体判据)"""
+    N = len(A); assert N == len(B)
+    ra = np.argsort(np.linalg.norm(A - A.mean(0), axis=1))
+    rb = np.argsort(np.linalg.norm(B - B.mean(0), axis=1))
+    idx = np.empty(N, dtype=int); idx[ra] = rb
+    best = np.inf
+    for _ in range(iters):
+        A0 = A - A.mean(0); B0 = B[idx] - B[idx].mean(0)
+        U, S, Vt = np.linalg.svd(A0.T @ B0)
+        d = np.sign(np.linalg.det(Vt.T @ U.T))
+        if reflect: d = -d                    # 强制反射
+        R = Vt.T @ np.diag([1, 1, d]) @ U.T
+        Aa = A0 @ R.T
+        rmsd = np.sqrt(((Aa - B0) ** 2).sum(1).mean())
+        best = min(best, rmsd)
+        D = np.linalg.norm(Aa[:, None, :] - B[None, :, :], axis=2)
+        new_idx = np.full(N, -1); used = set()
+        for i, j in np.dstack(np.unravel_index(np.argsort(D, axis=None), D.shape))[0]:
+            if new_idx[i] == -1 and j not in used:
+                new_idx[i] = j; used.add(j)
+        if np.array_equal(new_idx, idx): break
+        idx = new_idx
+    return best
+
+XB = group_points(NAME_B)
+XC = group_points(NAME_C)
+
+lines = []
+def w(s=""): lines.append(s); print(s)
+
+w("=" * 62)
+w("对子判定 v4 (B镜像 vs C(-Z))  " + datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+w("=" * 62)
+for nm, X in [("B(镜像)", XB), ("C(-Z)", XC)]:
+    c = X.mean(0); r = np.linalg.norm(X - c, axis=1)
+    w(f"[{nm}] 节点数={len(X)}  Rmax={r.max():.7f}")
+
+if XB is None or XC is None or len(XB) != len(XC):
+    w("⚠ 节点数不等或取点失败,中止。")
+else:
+    r_rot = align_rmsd(XB, XC, reflect=False)
+    r_inv = align_rmsd(-XB, XC, reflect=False)
+    r_ref = align_rmsd(XB, XC, reflect=True)
+    w("-" * 62)
+    w("检验1(真旋转)   RMSD = %.7f" % r_rot)
+    w("检验2(中心反演) RMSD = %.7f" % r_inv)
+    w("检验3(允许反射) RMSD = %.7f  ←对映体判据" % r_ref)
+    tol = 1e-4
+    w("-" * 62)
+    w("【判定】(容差 %.0e)" % tol)
+    if   r_rot < tol:               w("→ 同手性(差一真旋转)")
+    elif r_inv < tol:               w("→ 中心反演对:两对对映体格局")
+    elif r_ref < tol:               w("→ 对映体(镜像相关,不经σ面):原假设的推广形式成立")
+    else:                            w("→ 非对映异构体:手性独立,序参数χ分支重定义")
+
+os.makedirs(OUT_DIR, exist_ok=True)
+stamp = datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+with open(os.path.join(OUT_DIR, f"对子判定v4+{stamp}.txt"), "w", encoding="utf-8") as f:
+    f.write("\n".join(lines))
+print("已保存")

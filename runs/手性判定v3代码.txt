@@ -1,0 +1,119 @@
+# -*- coding: utf-8 -*-
+# 手性判定 v3终版(骨架): +Z闭合构型 / +Z闭合构型.002(Blender镜像) / -Z闭合构型
+# 检验0(标定): P(X+) ≈ Blender镜像?   检验1: X+ ≈rot X-? (同手性)
+# 检验2: P(X+) ≈rot X-? (镜像对)      检验3: -X+ ≈rot X-? (反演对)
+import bpy, os, datetime
+import numpy as np
+from math import degrees, acos
+
+NAME_A = "+Z闭合构型"
+NAME_B = "+Z闭合构型.002"
+NAME_C = "-Z闭合构型"
+OUT_DIR = r"D:\理论体系\测量代码 & 测量结果"
+
+def group_points(prefix):
+    """骨架版: 取全部顶点世界坐标 → 按距离聚类归并为节点。"""
+    objs = [o for o in bpy.data.objects if o.type=='MESH' and o.name.startswith(prefix)]
+    if not objs:
+        return None
+    dg = bpy.context.evaluated_depsgraph_get()
+    raw = []
+    for o in objs:
+        oe = o.evaluated_get(dg); me = oe.to_mesh(); mw = oe.matrix_world
+        raw += [list(mw @ v.co) for v in me.vertices]
+        oe.to_mesh_clear()
+    pts = np.array(raw)
+    CLUSTER_TOL = 1e-4   # 按模型尺度调: 约为棱长的1%以下
+    order = np.argsort(np.linalg.norm(pts - pts.mean(0), axis=1))
+    nodes = []
+    for p in pts[order]:
+        if nodes and min(np.linalg.norm(np.array(n)-p) for n in nodes) < CLUSTER_TOL:
+            continue
+        nodes.append(list(p))
+    return np.array(nodes)
+
+def align_rmsd(A, B, iters=60):
+    """对应无关的最优刚体对齐RMSD(只允许真旋转): 贪心重指派 + Kabsch迭代"""
+    N = len(A)
+    assert N == len(B), f"球数不等: {N} vs {len(B)}"
+    ra = np.argsort(np.linalg.norm(A - A.mean(0), axis=1))
+    rb = np.argsort(np.linalg.norm(B - B.mean(0), axis=1))
+    idx = np.empty(N, dtype=int); idx[ra] = rb
+    best = np.inf
+    for _ in range(iters):
+        A0 = A - A.mean(0); B0 = B[idx] - B[idx].mean(0)
+        U, S, Vt = np.linalg.svd(A0.T @ B0)
+        d = np.sign(np.linalg.det(Vt.T @ U.T))
+        R = Vt.T @ np.diag([1, 1, d]) @ U.T
+        Aa = A0 @ R.T
+        rmsd = np.sqrt(((Aa - B0) ** 2).sum(1).mean())
+        best = min(best, rmsd)
+        D = np.linalg.norm(Aa[:, None, :] - B[None, :, :], axis=2)
+        new_idx = np.full(N, -1); used = set()
+        for i, j in np.dstack(np.unravel_index(np.argsort(D, axis=None), D.shape))[0]:
+            if new_idx[i] == -1 and j not in used:
+                new_idx[i] = j; used.add(j)
+        if np.array_equal(new_idx, idx):
+            break
+        idx = new_idx
+    return best
+
+# ---------- σ 镜像矩阵(由 7x = 4√2·z 构造) ----------
+n = np.array([7.0, 0.0, -4.0*np.sqrt(2.0)]); n /= np.linalg.norm(n)
+P = np.eye(3) - 2.0*np.outer(n, n)
+
+XA = group_points(NAME_A)
+XB = group_points(NAME_B)
+XC = group_points(NAME_C)
+
+lines = []
+def w(s=""):
+    lines.append(s); print(s)
+
+w("=" * 62)
+w("手性判定 v3(骨架)  " + datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+w("=" * 62)
+for nm, X in [("A(+Z)", XA), ("B(Blender镜像)", XB), ("C(-Z)", XC)]:
+    if X is None:
+        w(f"[{nm}] ✗ 未找到对象!请核对名称前缀")
+        continue
+    c = X.mean(0); r = np.linalg.norm(X - c, axis=1)
+    w(f"[{nm}] 节点数={len(X)}  重心w=({c[0]:+.7f},{c[1]:+.7f},{c[2]:+.7f})  "
+      f"|w|={np.linalg.norm(c):.7f}  Rmax={r.max():.7f}  "
+      f"ε=|w|/Rmax={np.linalg.norm(c)/r.max():.7f}")
+    w(f"      σ面残差 7x-4√2z = {7*c[0]-4*np.sqrt(2)*c[2]:+.7f}")
+
+if any(X is None for X in (XA, XB, XC)) or len({len(XA), len(XB), len(XC)}) != 1:
+    w("⚠ 节点数不等或取点失败,中止判定。请贴回上方节点数信息。")
+else:
+    r0 = align_rmsd(XA @ P.T, XB)
+    r1 = align_rmsd(XA, XC)
+    r2 = align_rmsd(XA @ P.T, XC)
+    r3 = align_rmsd(-XA, XC)
+    w("-" * 62)
+    w("检验0(标定)  RMSD(P(X+), Blender镜像) = %.7f" % r0)
+    w("检验1(同手性) RMSD(X+, X-)            = %.7f" % r1)
+    w("检验2(镜像对) RMSD(P(X+), X-)         = %.7f" % r2)
+    w("检验3(反演对) RMSD(-X+, X-)           = %.7f" % r3)
+
+    cA, cC = XA.mean(0), XC.mean(0)
+    if np.linalg.norm(cA) > 1e-9 and np.linalg.norm(cC) > 1e-9:
+        cosv = np.dot(cA, cC)/(np.linalg.norm(cA)*np.linalg.norm(cC))
+        w("偏移向量w夹角 ∠(w+, w-) = %.4f°" % degrees(acos(max(-1, min(1, cosv)))))
+
+    tol = 1e-4
+    w("-" * 62)
+    w("【判定】(容差 %.0e)" % tol)
+    if r0 > tol:
+        w("⚠ 标定未过: σ镜像矩阵与Blender镜像不一致,以下判定降权")
+    if   r1 < tol: w("→ 同手性(差一真旋转):镜像支从未出现,双根同手")
+    elif r2 < tol: w("→ 互为σ镜像:原假设复活")
+    elif r3 < tol: w("→ 中心反演对:解集膨胀为两对对映体")
+    else:          w("→ 全部>容差:非对映异构体,序参数χ分支重定义")
+
+os.makedirs(OUT_DIR, exist_ok=True)
+stamp = datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+path = os.path.join(OUT_DIR, f"手性判定v3+{stamp}.txt")
+with open(path, "w", encoding="utf-8") as f:
+    f.write("\n".join(lines))
+print("已保存:", path)

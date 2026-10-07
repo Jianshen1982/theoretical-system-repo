@@ -1,0 +1,51 @@
+import bpy, datetime
+import numpy as np
+
+OUTDIR = r"D:\物理数学\数学\理想球体的有限不可实现性"
+STAMP  = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+F5 = open(OUTDIR + "\\测量报告5_" + STAMP + ".txt", "w", encoding="utf-8")
+def log5(*a): print(*a, file=F5)
+log5(f"生成时间: {datetime.datetime.now().isoformat()}")
+
+def OB(key):
+    k = key.replace(" ", "").lower()
+    for name in bpy.data.objects.keys():
+        if name.replace(" ", "").lower() == k:
+            return bpy.data.objects[name]
+    raise KeyError(f"找不到对象：{key}")
+
+st = OB("+z闭合构型")
+M  = st.matrix_world
+O  = np.array(M.translation[:])                       # 枢轴（设置原点后的位置）
+c  = np.array(OB("红球").matrix_world.translation[:]) # 红球心（世界坐标）
+d  = float(np.linalg.norm(O - c))
+u  = (c - O) / d
+
+log5("[枢轴测量]  +z闭合构型")
+log5(f"  枢轴 O   = ({O[0]:+.6f}, {O[1]:+.6f}, {O[2]:+.6f})")
+log5(f"  红球心 c = ({c[0]:+.6f}, {c[1]:+.6f}, {c[2]:+.6f})")
+log5(f"  偏心距 d = |O-c| = {d:.6f}    （目测拟合 0.2*0.934636 = {0.2*0.934636:.6f}）")
+log5(f"  方向 (c-O)/d = ({u[0]:+.6f}, {u[1]:+.6f}, {u[2]:+.6f})"
+     f"   ← z分量为负即'偏下'")
+
+V = np.array([(M @ v.co)[:] for v in st.data.vertices])
+bboxc = (V.max(0) + V.min(0)) / 2
+cent  = V.mean(0)
+log5(f"\n[枢轴身份候选]（世界坐标）")
+log5(f"  [候选1] 包围盒中心 ({bboxc[0]:+.6f},{bboxc[1]:+.6f},{bboxc[2]:+.6f})"
+     f"  距红心 = {np.linalg.norm(bboxc-c):.6f}")
+log5(f"  [候选2] 顶点质心   ({cent[0]:+.6f},{cent[1]:+.6f},{cent[2]:+.6f})"
+     f"  距红心 = {np.linalg.norm(cent-c):.6f}")
+
+balls = ["红球","篮球","黄球1","黄球2","黄球3","黄球4","黄球5",
+         "白球","黄球6","黄球7","黄球8","黄球9","棕球"]
+BC = np.array([OB(nm).matrix_world.translation[:] for nm in balls])
+log5(f"  [候选3] 13球心质心 ({BC.mean(0)[0]:+.6f},{BC.mean(0)[1]:+.6f},{BC.mean(0)[2]:+.6f})"
+     f"  距红心 = {np.linalg.norm(BC.mean(0)-c):.6f}")
+
+log5(f"\n[附加]  构型顶点模长球面（世界系，半径应仍≈√(8/3)）")
+mods = np.linalg.norm(V - O, axis=1)          # 顶点到枢轴的距离范围
+log5(f"  顶点到枢轴距离: min={mods.min():.6f}, max={mods.max():.6f}")
+
+F5.close()
+print("报告5已写入:", OUTDIR + "\\测量报告5_" + STAMP + ".txt")

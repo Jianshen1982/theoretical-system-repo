@@ -1,0 +1,166 @@
+# -*- coding: utf-8 -*-
+# 附录E生成脚本 v6：R8'''尺度修复 | R17五重邻接普查 | R18骨架闭式精确验证 | R19 δ解析推导 | R20 n-标定导出
+import os, datetime, math
+import numpy as np
+try:
+    import sympy as sp
+    from sympy import sqrt as SS, Rational
+    SYMPY_OK = True
+except Exception:
+    SYMPY_OK = False
+
+OUTDIR = r"D:\物理数学\数学\理想球体的有限不可实现性"
+STAMP  = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+LOG = open(os.path.join(OUTDIR, f"附录E生成v6_{STAMP}.txt"), "w", encoding="utf-8")
+def logS(*a): print(*a); print(*a, file=LOG)
+logS(f"sympy 可用: {SYMPY_OK}")
+
+TGT = np.array([8/3, 256/81, 200/57]); SQ83 = math.sqrt(8/3)
+ZERO = {1,5,8,12}; FIVE = [0,13,14,15,16]
+NCF  = np.array([2*math.sqrt(2)/3, -1/3, 0.0])
+SQ2, SQ6, SQ23 = math.sqrt(2), math.sqrt(6), math.sqrt(2/3)
+
+# ---- 骨架闭式表（数值；姿态无关验证见 R18） ----
+CF = {2:( 8*SQ2/9,-8/9,-2*SQ6/9), 3:( 8*SQ2/9, 8/9,-2*SQ6/9),
+      4:( SQ2/3,-4/3,SQ23),        8:( SQ2/3, 4/3, SQ23),
+      5:( 0.0, 0.0, 2*SQ6/3),      7:( SQ2, 0.0, SQ23),
+      6:(-23*SQ2/27,-20/27,SQ23),  9:(-7*SQ2/9, 8/9, SQ23),
+     10:(-8*SQ2/27,40/27,-2*SQ6/9),11:(-88*SQ2/81,8/81,-2*SQ6/9),
+     12:(-7*SQ2/19,-28/19,-11*SQ2/(19*math.sqrt(3)))}
+CFS = None
+if SYMPY_OK:
+    s2,s6,s23 = SS(2),SS(6),SS(2)/SS(3)
+    CFS = {2:( 8*s2/9,-Rational(8,9),-2*s6/9), 3:( 8*s2/9,Rational(8,9),-2*s6/9),
+           4:( s2/3,-Rational(4,3),s23),       8:( s2/3,Rational(4,3),s23),
+           5:( 0,0,2*s6/3),                    7:( s2,0,s23),
+           6:(-23*s2/27,-Rational(20,27),s23), 9:(-7*s2/9,Rational(8,9),s23),
+          10:(-8*s2/27,Rational(40,27),-2*s6/9),11:(-88*s2/81,Rational(8,81),-2*s6/9),
+          12:(-7*s2/19,-Rational(28,19),-11*s2/(19*SS(3)))}
+
+def load_bpy(name):
+    import bpy
+    k = name.replace(" ","").lower()
+    nm = next(n for n in bpy.data.objects.keys() if n.replace(" ","").lower()==k)
+    ob = bpy.data.objects[nm]; M = ob.matrix_world
+    return np.array([(M @ v.co)[:] for v in ob.data.vertices], dtype=np.float64)
+
+def center_idx(V): return int(np.argmin([np.linalg.norm(V-x,axis=1).max() for x in V]))
+
+def classify(V):
+    iu = np.triu_indices(17,1); P,Q = iu
+    d2 = ((V[P]-V[Q])**2).sum(1)
+    lab = np.argmin(np.abs(d2[:,None]-TGT[None,:]),axis=1)
+    rel = np.abs(d2-TGT[lab])/TGT[lab]; inl = rel < 1e-3
+    cnt = [int((lab[inl]==k).sum()) for k in range(3)]
+    logS(f"  内点={int(inl.sum())} 计数={cnt} 残差={rel[inl].max():.1e}")
+    return (P[inl],Q[inl],TGT[lab[inl]]) if (int(inl.sum())==51 and cnt==[45,4,2]) else None
+
+def lm_solve(V0,P,Q,t,c0i,iters=300):
+    X = V0.copy()
+    def resid(X):
+        r = ((X[P]-X[Q])**2).sum(1)-t
+        g = 1e2*np.concatenate([[*X[c0i]], np.cross(X[2]-X[c0i],X[3]-X[c0i])[:2]])
+        return np.concatenate([r,g])
+    r = resid(X); lam = 1e-8; ne = len(t)
+    for it in range(iters):
+        J = np.zeros((len(r),X.size))
+        for k in range(X.size):
+            e = np.zeros(X.size); e[k]=1e-7
+            J[:,k] = (resid(X+e.reshape(17,3))-r)/1e-7
+        JTJ,JTr = J.T@J, J.T@r
+        for _ in range(40):
+            try: dx = np.linalg.solve(JTJ+lam*np.eye(JTJ.shape[0]),-JTr)
+            except np.linalg.LinAlgError: lam*=10; continue
+            Xn = X+dx.reshape(17,3); rn = resid(Xn)
+            if (rn**2).sum() < (r**2).sum():
+                X,r = Xn,rn; lam = max(lam*0.3,1e-14); break
+            lam *= 10
+        else: break
+        if math.sqrt((r[:ne]**2).mean()) < 1e-15: break
+    return X, math.sqrt((r[:ne]**2).mean())
+
+edges = None
+for tag,obj in [("+Z","+z闭合构型"),("-Z","-z闭合构型")]:
+    logS(f"\n############ {tag} 支 ############")
+    V0 = load_bpy(obj); c0i = center_idx(V0)
+    if c0i != 1: logS("中心顶点≠1，中止"); continue
+    V0c = V0 - V0[c0i]
+    sol = None; cand = None
+    for c in [SQ83,1.0,math.sqrt(3/8),1/SQ83]:
+        sol = classify(V0c*c)
+        if sol: cand = c; break
+    if sol is None: logS("[中止] 无标度成立"); continue
+    P,Q,t = sol; edges = (P,Q,t)
+    Xm,rms = lm_solve(V0c*cand,P,Q,t,c0i); Xm = Xm - Xm[c0i]
+    logS(f"[LM] d² RMS = {rms:.2e}")
+    # R8''' 尺度修复：对齐目标是同尺度种子
+    H = Xm.T @ (V0c*cand); U,S,Vt = np.linalg.svd(H)
+    det = float(np.linalg.det(U@Vt))
+    if det < 0: U[:,-1] *= -1
+    R = U@Vt
+    res = float(np.linalg.norm(Xm@R - V0c*cand, axis=1).max())
+    logS(f"[R8''' 全等性·修复后] 残差 = {res:.2e} (det={det:+.0f}) ← 应~1e-5 ⇒ 种子≅LM实现，v5的'第二实现'系尺度bug假警报")
+    Xa = Xm @ R
+    # R17 五重邻接普查
+    d5 = np.linalg.norm(Xa - Xa[0], axis=1)
+    nb = [i for i in range(17) if i != 0 and abs(d5[i]-SQ83) < 1e-6]
+    logS(f"[R17 五重邻接] 与塌缩点距离=√(8/3) 的顶点 = {nb}（预期 [1,11,12] 或镜像 [1,2,12]）")
+    # R20 n-标定：把镜像法向精确旋到闭式方向
+    nn = Xa[11]-Xa[2]; nn /= np.linalg.norm(nn)
+    if nn[0] < 0: nn = -nn
+    v = np.cross(nn,NCF); c = float(nn@NCF); sn = np.linalg.norm(v)
+    if sn > 1e-15:
+        vx = np.array([[0,-v[2],v[1]],[v[2],0,-v[0]],[-v[1],v[0],0]])
+        Xa = Xa @ (np.eye(3) + vx + vx@vx*((1-c)/sn**2))
+    dp = Xa @ NCF
+    logS(f"[R20] 标定后: 零档 max|dp| = {max(abs(dp[i]) for i in ZERO):.2e}; "
+         f"δ = {abs(dp[FIVE]).mean():.15f}; n·w = {float(NCF@Xa.mean(0)):+.12f}")
+    fp = os.path.join(OUTDIR, f"附录E_{tag}.txt")
+    np.savetxt(fp, Xa, fmt="%.17e")
+    logS(f"[导出·n标定框架·模型单位] {fp}")
+
+# ================= R18 骨架闭式精确验证（姿态无关） =================
+logS("\n[R18 骨架闭式表验证]")
+P,Q,t = edges
+if SYMPY_OK:
+    bad = 0
+    for a,b,tt in zip(P,Q,t):
+        if a in CFS and b in CFS: e = sp.simplify(sum((CFS[a][k]-CFS[b][k])**2 for k in range(3)) - sp.nsimplify(tt))
+        elif a==1 and b in CFS:   e = sp.simplify(sum(v**2 for v in CFS[b]) - sp.nsimplify(tt))
+        elif b==1 and a in CFS:   e = sp.simplify(sum(v**2 for v in CFS[a]) - sp.nsimplify(tt))
+        else: continue
+        if sp.simplify(e) != 0: bad += 1; logS(f"  棱({a},{b}) 残差 {e}")
+    logS(f"  [符号精确] 骨架棱逐条 simplify = 0：失败 {bad} 条（0 = 闭式表作为精确解被符号证明）")
+CN = {k: np.array(v) for k,v in CF.items()}
+maxerr = 0.0
+for a,b,tt in zip(P,Q,t):
+    if a in CN and b in CN: maxerr = max(maxerr, abs(((CN[a]-CN[b])**2).sum()-tt)/tt)
+    elif a==1 and b in CN:  maxerr = max(maxerr, abs((CN[b]**2).sum()-tt)/tt)
+    elif b==1 and a in CN:  maxerr = max(maxerr, abs((CN[a]**2).sum()-tt)/tt)
+logS(f"  [数值] 骨架棱最大相对残差 = {maxerr:.2e}")
+
+# ================= R19 δ 解析推导 =================
+logS("\n[R19 δ 解析推导：三球交 {原点, v11, v12}, 半径√(8/3)]")
+logS("  平面: P·v11 = P·v12 = 4/3;  s := P·n ⇒ y = 2√2·x − 3s")
+logS("  消元: u=√2·x=(800s−30)/435, w=√6·z=−(3780s+2490)/435; 球方程×6 ⇒ 27u²−72us+54s²+w²=16")
+if SYMPY_OK:
+    s = sp.symbols('s')
+    u = (800*s-30)/435; w = -(3780*s+2490)/435
+    poly = sp.expand(27*u**2 - 72*u*s + 54*s**2 + w**2 - 16)
+    roots = [sp.simplify(r) for r in sp.solve(sp.Eq(poly,0), s)]
+    for r in roots: logS(f"  根 s = {r} = {float(r):.15f}")
+    s1 = [r for r in roots if sp.simplify(abs(r)-Rational(296,1377))==0]
+    logS(f"  判别式检验: 123120²−4·111537·21312 = {123120**2-4*111537*21312} = 75168² → 完全平方")
+    # 第二根身份
+    for r in roots:
+        if sp.simplify(r+Rational(8,9))==0:
+            xx = sp.simplify(((800*r-30)/435)/SS(2)); yy = sp.simplify(2*((800*r-30)/435)-3*r)
+            zz = sp.simplify((-(3780*r+2490)/435)/SS(6))
+            same6 = all(sp.simplify(xx-CFS[6][k])==0 for k in range(3))
+            logS(f"  第二根重建坐标 = ({xx}, {yy}, {zz}) ≡ 顶点6: {same6}")
+else:
+    rr = np.roots([111537.0,123120.0,21312.0])
+    logS(f"  [float路径] 根 = {rr}（预期 −0.2149600581 / −0.8888888889）")
+logS("\n[R19 结论] δ = P·n = −296/1377（+Z支）；δ̂ = 74√6/1377；|n·w| = 5δ/17 = 1480/23409")
+LOG.close()
+print("\nv6 完成 → 运行测量报告10（预注册定案落锤）")

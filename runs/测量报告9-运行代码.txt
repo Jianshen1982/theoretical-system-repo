@@ -1,0 +1,188 @@
+# -*- coding: utf-8 -*-
+# 测量报告9（修订版）：δ 闭式定案（sympy nsimplify · float64 输入）
+# 修订记录（相对首版）：
+#   R1 五重类切片剔零档：np.abs(dp[dp>1e-3]) 先去镜面零档(4个~1e-6)，再取五重类
+#   R2 谱分段修正：降序谱 vals[0:2]=40/27档, [2:4]=4/3档, [4:8]=8/9档
+#   R3 nsimplify 参数：full_precision → full（sympy 1.14 真实签名）
+#   R4 总判逻辑：float32输入或sympy不可用 ⇒ "判据不适用"，不构成定案/落空记录
+# 协议：A.7 定向 n_x>0；A.8 阈值绑定精度（float64→1e-12/分母1e6，float32→1e-7/分母5000）
+# 预注册判据：nsimplify 残差 < 阈值 且候选属结构族(17/19/27派生) ⇒ 定案；
+#            float64+sympy就绪下三通道全落空 ⇒ δ升格§9开放问题
+import sys, os, datetime, math
+from fractions import Fraction
+import numpy as np
+
+# ---- sympy 路径注入（方案1兜底；管理员安装成功后此段自动无害）----
+_p = r"C:\Users\Admin\AppData\Roaming\Python\python313\site-packages"
+if os.path.isdir(_p) and _p not in sys.path: sys.path.append(_p)
+try:
+    import sympy
+    from sympy import nsimplify as nsimp, sqrt
+    SYMPY_OK = True; SYMPY_VER = sympy.__version__
+except ImportError:
+    SYMPY_OK = False; SYMPY_VER = "不可用（仅扫描通道）"
+
+OUTDIR = r"D:\物理数学\数学\理想球体的有限不可实现性"
+STAMP  = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+FS = open(OUTDIR + "\\测量报告9_" + STAMP + ".txt", "w", encoding="utf-8")
+def logS(*a): print(*a, file=FS)
+logS("=" * 72)
+logS("测量报告9（修订版 R1-R4）：δ 闭式定案")
+logS(f"生成时间: {datetime.datetime.now().isoformat()}")
+logS(f"环境: numpy {np.__version__}; sympy {SYMPY_VER}")
+logS("=" * 72)
+
+# ================= 输入区：粘贴附录E float64 坐标（两支各17行）=================
+COORDS_PLUS_Z = """
+# ← +Z 的 17 行 float64 坐标（x,y,z 空格或逗号分隔，#后为注释）
+"""
+COORDS_MINUS_Z = """
+# ← -Z 的 17 行 float64 坐标
+"""
+# ==============================================================================
+
+def parse(s):
+    rows = []
+    for line in s.strip().splitlines():
+        line = line.split("#")[0].strip()
+        if line:
+            rows.append([float(t) for t in line.replace(",", " ").split()])
+    return np.array(rows) if len(rows) == 17 else None
+
+def load(key, name):
+    A = parse(key)
+    if A is not None:
+        return A, "float64(粘贴)"
+    import bpy
+    k = name.replace(" ", "").lower()
+    nm = next(n for n in bpy.data.objects.keys() if n.replace(" ", "").lower() == k)
+    ob = bpy.data.objects[nm]; M = ob.matrix_world
+    return np.array([(M @ v.co)[:] for v in ob.data.vertices]), "float32(Blender回退)"
+
+IDX2, IDX11 = 2, 11                 # 0基索引（报告6生效版本）
+SQ83 = math.sqrt(8.0 / 3.0)         # 归一化→模型单位
+SPECTRUM = [("对(2,11)",     Fraction(40, 27)),
+            ("对(3,10)",     Fraction(4, 3)),
+            ("对(4,6)(7,9)", Fraction(8, 9))]
+
+def analyze(V, tag):
+    logS(f"\n========== {tag} ==========")
+    c0i = int(np.argmin([np.linalg.norm(V - x, axis=1).max() for x in V]))
+    c0 = V[c0i]; rel = V - c0
+    Rc = float(np.linalg.norm(rel, axis=1).max())
+    w = rel.mean(axis=0); nrm = float(np.linalg.norm(w))
+    nn = V[IDX11] - V[IDX2]; nn = nn / np.linalg.norm(nn)
+    if nn[0] < 0: nn = -nn          # A.7 定向：n_x > 0
+    logS(f"中心顶点 idx={c0i}; R_c = {Rc:.15f}; |w|/R_c = {nrm/Rc:.15f}")
+    logS(f"n = ({nn[0]:+.15f}, {nn[1]:+.15f}, {nn[2]:+.15f})")
+    logS(f"  闭式核对: n_x-2√2/3 = {nn[0]-2*math.sqrt(2)/3:.3e}; "
+         f"n_y+1/3 = {nn[1]+1/3:.3e}; n_z = {nn[2]:.3e}")
+    nw = float(nn @ w); dp = rel @ nn
+    # ---- δ 双通道（R1：直取通道剔零档）----
+    delta_hat_a = abs(nw) * 17.0 / 5.0
+    nz = np.sort(np.abs(dp[np.abs(dp) > 1e-3]))[:5]
+    delta_hat_b = float(nz.mean())
+    delta_model = delta_hat_a * SQ83
+    logS(f"n·w = {nw:+.15f}")
+    logS(f"δ̂(恒等式)  = {delta_hat_a:.15f}")
+    logS(f"δ̂(直接5类) = {delta_hat_b:.15f}   双通道差 = {abs(delta_hat_a-delta_hat_b):.2e}  ← 应<1e-7")
+    logS(f"δ(模型单位) = {delta_model:.15f}")
+    # ---- 镜距谱解码（R2：降序分段）----
+    logS("[镜距谱解码·模型单位]")
+    vals = sorted(np.abs(dp * SQ83), reverse=True)
+    SEG = {SPECTRUM[0][0]: (0, 2), SPECTRUM[1][0]: (2, 4), SPECTRUM[2][0]: (4, 8)}
+    for name, frac in SPECTRUM:
+        a, b = SEG[name]
+        m = sum(vals[a:b]) / (b - a)
+        e = float(frac)
+        logS(f"  {name}: 实测 {m:.12f} vs 闭式 {e:.12f} (= {frac})  相对残差 = {abs(m-e)/e:.1e}")
+    logS(f"  五重类: 实测 {delta_model:.12f} vs [目标δ] ← 本报告识别对象")
+    return dict(rc=Rc, w=nrm/Rc, nw=nw, d_hat=delta_hat_a,
+                d_model=delta_model, ch=abs(delta_hat_a - delta_hat_b))
+
+A = load(COORDS_PLUS_Z,  "+z闭合构型"); Va, src_a = A
+B = load(COORDS_MINUS_Z, "-z闭合构型"); Vb, src_b = B
+r1 = analyze(Va, f"+Z [{src_a}]")
+r2 = analyze(Vb, f"-Z [{src_b}]")
+logS(f"\n[对映体核对] |w|/R_c 差 = {abs(r1['w']-r2['w']):.2e};  n·w 和 = {r1['nw']+r2['nw']:+.3e}（应≈0）")
+logS(f"[δ 对映体核对] 两支 δ̂ 差 = {abs(r1['d_hat']-r2['d_hat']):.2e}")
+
+# ---- A.8：阈值绑定输入精度 ----
+FLOAT64 = ("float64" in src_a) and ("float64" in src_b)
+REL_TOL = 1e-12 if FLOAT64 else 1e-7
+DMAX    = 10**6 if FLOAT64 else 5000
+logS(f"\n[协议A.8] 输入={src_a} / {src_b}; 相对阈值={REL_TOL:.0e}; 有理分母上限={DMAX}")
+if not FLOAT64:
+    logS("[警告] float32 输入：结果仅候选线索，定案必须 float64 粘贴坐标重跑。")
+
+# ---- 目标值（两支平均）----
+d_model = float(0.5 * (r1["d_model"] + r2["d_model"]))
+w_ratio = float(0.5 * (r1["w"] + r2["w"]))
+
+FAMILY = (17, 19, 27, 3, 9, 81, 729, 531441)
+def family_ok(den):
+    d = abs(int(den))
+    if d == 1: return True
+    for f in FAMILY:
+        while d % f == 0: d //= f
+    return d == 1
+
+results = {}
+BASIS = [sqrt(k) for k in (2,3,5,7,13,17,19,38,57,86,89,257)] + [(1+sqrt(5))/2] if SYMPY_OK else None
+
+def recognize(_v, _t):
+    x = float(_v); tag = str(_t)
+    logS(f"\n----- 目标: {tag} = {x:.15f} -----")
+    # 通道1：有理（A.8 反假象：命中须过结构族检验）
+    fr = Fraction(x).limit_denominator(DMAX)
+    err = abs(float(fr) - x) / max(abs(x), 1e-12)
+    ok = err < REL_TOL and family_ok(fr.denominator)
+    logS(f"[有理·A.8] {fr}  相对残差 = {err:.1e}  结构族 = {family_ok(fr.denominator)}"
+         + ("   ← 定案" if ok else ("   ← 命中但分母出族，判废" if err < REL_TOL else "")))
+    if ok: results[tag] = str(fr)
+    # 通道2：√m/k 定向扫描
+    hits = []; v2 = x * x
+    for k in range(1, 5001):
+        m = v2 * k * k; mi = int(round(m))
+        if mi > 1 and abs(m - mi) < 1e-13 * m and abs(math.sqrt(mi)/k - x)/max(abs(x),1e-12) < REL_TOL:
+            hits.append((mi, k))
+    logS("[√m/k 扫描] " + ("命中: " + ", ".join(f"√{m}/{k}" for m, k in hits[:6]) if hits else "无命中"))
+    for m, k in hits[:3]: results.setdefault(tag, f"√{m}/{k}")
+    # 通道3：nsimplify（R3：参数 full，非 full_precision）
+    if SYMPY_OK:
+        for mode, y in [("直接", x), ("平方", x*x), ("×17", x*17), ("×27", x*27), ("×17·27", x*17*27)]:
+            try:
+                # ① 禁止纯有理数答案，强制代数识别（含 BASIS 中的根式/黄金比才可能命中）
+                c = nsimp(y, BASIS, tolerance=1e-20, rational=False, full=False)
+                cv = float(c.evalf(30)); r = abs(cv - y) / max(abs(y), 1e-12)
+                # ② 命中判定加结构检验：候选须含根式成分
+                hit = (r < REL_TOL) and (c.free_symbols or c.has(sqrt(2)) or any(c.has(s) for s in BASIS))
+                logS(f"[nsimplify·{mode}] {tag}: {c}  相对残差 = {r:.1e}" + ("   ← 定案" if hit else ""))
+                if hit:
+                    suffix = ("（平方还原）" if mode == "平方"
+                              else (f"（/{mode[1:]}还原）" if mode.startswith("×") else ""))
+                    results.setdefault(tag, str(c) + suffix)
+            except Exception as e:
+                logS(f"[nsimplify·{mode}] {tag}: 失败 — {e}")
+    else:
+        logS("[nsimplify] sympy 不可用，通道3跳过。")
+
+recognize(d_model, "δ(模型单位)")
+recognize(w_ratio, "|w|/R_c")
+
+# ---- 总判（R4：判据适用性前置检验）----
+logS("\n" + "=" * 72)
+logS("[总判·预注册判据]")
+if (not FLOAT64) or (not SYMPY_OK):
+    logS("  [判据不适用] 输入精度或通道前提未满足 —— 本轮仅管线验证，不构成定案或落空记录。")
+    logS("  δ 状态：待 float64 定案（非升格、非关闭）。")
+elif results:
+    for k, v in results.items():
+        logS(f"  {k} ⇒ {v}")
+    logS("  ⇒ δ（及同族 |w|/R_c）闭式定案：附录F收官，§9(i) 关闭，恒等式 |n·w|=(5/17)δ̂ 全链闭合。")
+else:
+    logS("  float64 + sympy 就绪下三通道全部落空 ⇒ δ 定性为'四档有理镜距(40/27, 4/3, 8/9, 0)之外")
+    logS("     唯一的高次代数指纹'，且恰承载手性方向 n·w —— 升格 §9 开放问题，§5.4 记谱结构。")
+logS("=" * 72)
+FS.close()
+print("已写入:", OUTDIR + "\\测量报告9_" + STAMP + ".txt")
